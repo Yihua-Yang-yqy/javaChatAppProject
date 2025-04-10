@@ -63,6 +63,7 @@ public class ChatServer {
             String createTABLE = "CREATE TABLE IF NOT EXISTS Users (" +
                     "username VARCHAR(32), " +
                     "password VARCHAR(32), " +
+                    "salt VARCHAR(32), " +  
                     "PRIMARY KEY(username));";
             Statement statement = connection.createStatement();
             statement.execute(createTABLE);
@@ -79,16 +80,31 @@ public class ChatServer {
             System.out.println("Username: " + username);
             System.out.println("Password: " + password);
             if (connection != null) {
-                String sql = "SELECT 1 FROM Users WHERE username = ? AND password = ?";
-                PreparedStatement statement = connection.prepareStatement(sql);
-                statement.setString(1, username);
-                statement.setString(2, password);
-                ResultSet result = statement.executeQuery();
-
-                valid = result.next();
-                System.out.println(valid);
-                statement.close();
-                result.close();
+                // First retrieve the salt for this user
+                String saltSql = "SELECT salt FROM Users WHERE username = ?";
+                PreparedStatement saltStatement = connection.prepareStatement(saltSql);
+                saltStatement.setString(1, username);
+                ResultSet saltResult = saltStatement.executeQuery();
+                
+                if (saltResult.next()) {
+                    String salt = saltResult.getString("salt");
+                    // Hash the provided password with the retrieved salt
+                    String hashedPassword = hashToMD5(password, salt);
+                    
+                    // Now validate with the hashed password
+                    String sql = "SELECT 1 FROM Users WHERE username = ? AND password = ?";
+                    PreparedStatement statement = connection.prepareStatement(sql);
+                    statement.setString(1, username);
+                    statement.setString(2, hashedPassword);
+                    ResultSet result = statement.executeQuery();
+    
+                    valid = result.next();
+                    System.out.println(valid);
+                    statement.close();
+                    result.close();
+                }
+                saltResult.close();
+                saltStatement.close();
             }
         } catch (Exception e) {
             System.out.println(e.getMessage());
@@ -106,16 +122,23 @@ public class ChatServer {
                 PreparedStatement check = connection.prepareStatement(checkSql);
                 check.setString(1, username);
                 ResultSet checkResult = check.executeQuery();
-                if (checkResult.next()&&checkResult.getInt(1)>0) {
+                if (checkResult.next() && checkResult.getInt(1) > 0) {
                     checkResult.close();
                     check.close();
                     // just return false if such username already found in the database
                     return false;
                 } else {
-                    String sql = "INSERT OR IGNORE INTO Users (username,password) VALUES (?, ?)";
+                    // Generate a random salt
+                    String salt = generateSalt();
+                    // Hash the password with the salt
+                    String hashedPassword = hashToMD5(password, salt);
+                    
+                    // Update SQL to include salt
+                    String sql = "INSERT OR IGNORE INTO Users (username, password, salt) VALUES (?, ?, ?)";
                     PreparedStatement statement = connection.prepareStatement(sql);
                     statement.setString(1, username);
-                    statement.setString(2, password);
+                    statement.setString(2, hashedPassword);
+                    statement.setString(3, salt);
                     int result = statement.executeUpdate();
                     System.out.println("result: " + result);
                     if (result > 0) {
@@ -124,7 +147,6 @@ public class ChatServer {
                     statement.close();
                     return true;
                 }
-
             }
         } catch (Exception e) {
             System.out.println("Error creating user: " + e.getMessage());
@@ -183,12 +205,22 @@ public class ChatServer {
         }
     }
 
-    public String hashToMD5(String input) {
+    private String generateSalt() {
+        StringBuilder salt = new StringBuilder();
+        java.util.Random random = new java.util.Random();
+        // Generate a 16-character salt
+        for (int i = 0; i < 16; i++) {
+            salt.append(Integer.toHexString(random.nextInt(16)));
+        }
+        return salt.toString();
+    }
+    
+    public String hashToMD5(String input, String salt) {
         StringBuilder result = new StringBuilder();
         try {
             // create an digest instance for MD5
             MessageDigest md5 = MessageDigest.getInstance("MD5");
-            md5.update(input.getBytes());
+            md5.update((input + salt).getBytes());
             byte[] hash = md5.digest();
             for (int i = 0; i < hash.length; i++) {
                 result.append(String.format("%02X", hash[i] & 0xFF));
@@ -198,7 +230,6 @@ public class ChatServer {
             System.err.println("error on hashing: " + e.getMessage());
         }
         return result.toString();
-
     }
 
     private class ClientHandler implements Runnable {
@@ -312,7 +343,7 @@ public class ChatServer {
                     username = decryptedUsername;
                     System.out.println(username);
                     // hash the username for the later database operation
-                    String hashedUsername = hashToMD5(decryptedUsername);
+                    String hashedUsername = hashToMD5(decryptedUsername,"");
                     System.out.println(hashedUsername);
 
                     // RECEIVE encrypted hashed password
